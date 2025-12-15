@@ -1,4 +1,5 @@
 **/.build
 **/*.log
 **/ctng/include
+**/ctng32/include
 

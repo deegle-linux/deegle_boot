@@ -41,8 +41,21 @@ The toolchain gets installed into `~/x-tools`. To select the toolchain run:
 The toolchain gets installed into `~/x-tools`. To select the toolchain run:
 
 - `export PATH="${PATH}:/home/tom/x-tools/aarch64-unknown-linux-gnu/bin"`
-- `export ARCH="arm"`
+- `export ARCH="aarch64"`
 - `export CROSS_COMPILE="aarch64-unknown-linux-gnu-"`
+
+#### Build the 32bit toolchain for the firmware
+
+- Change into the config folder: `cd pocketbeagle/ctng32`
+- Review the config: `ct-ng menuconfig`
+- Build and install the toolchain (using 16 threads): `ct-ng build.16`
+
+The toolchain gets installed into `~/x-tools`. To select the toolchain run:
+
+- `export PATH="${PATH}:/home/tom/x-tools/armv7-AM6362-eabihf/bin"`
+- `export ARCH="aarch64"`
+- `export CROSS_COMPILE="armv7-AM6362-eabihf-"`
+- `export CROSS_COMPILE64="aarch64-unknown-linux-gnu-"`
 
 ### Bash aliases
 
@@ -51,16 +64,21 @@ For more comfort, you can add the following aliases to your `~/.bashrc`
 ```bash
 export PATH="${PATH}:/home/tom/x-tools/arm-cortex_a8-linux-gnueabihf/bin"
 export PATH="${PATH}:/home/tom/x-tools/aarch64-unknown-linux-gnu/bin"
+export PATH="${PATH}:/home/tom/x-tools/armv7-rpi2-linux-gnueabihf/bin"
 
 alias tc_bbb=" \
-	export ARCH=\"arm\";
-	export CROSS_COMPILE=\"arm-cortex_a8-linux-gnueabihf-\""
+        export ARCH=\"arm\"; \
+        export CROSS_COMPILE=\"arm-cortex_a8-linux-gnueabihf-\" \
 
 alias tc_pb2=" \
-	export ARCH=\"arm\";
-	export CROSS_COMPILE=\"aarch64-unknown-linux-gnu-cpp-\""
+        export ARCH=\"aarch64\"; \
+        export CROSS_COMPILE=\"aarch64-unknown-linux-gnu-\" \
 
-alias tc_info="env | grep ARCH; env | grep CROSS_COMPILE; which ${CROSS_COMPILE}gcc"
+alias tc_info=" \
+	env | grep \"ARCH\" ; \
+	env | grep \"CROSS_COMPILE\" ; \
+	which \"${CROSS_COMPILE}gcc\" ; "
+
 ```
 
 ## BeagleBone Black
@@ -324,3 +342,152 @@ Then reboot the device. The serial output should look like:
 /bin/sh: can't access tty; job control turned off
 ~ # 
 ```
+
+## PocketBeagle 2
+
+![PocketBeagle2 Boot Flow](boot_diagram_am62.svg)
+
+For more details of the PocketBeagle boot flow, see https://docs.u-boot.org/en/v2025.01/board/ti/am62x_sk.html.
+
+## Setup environment
+
+The necessary environment variables for building the firmware are configured in `pocketbeagle/build_env`
+and should look like: 
+
+```bash
+export CC32="armv7-rpi2-linux-gnueabihf"
+export CC64="aarch64-unknown-linux-gnu"
+
+export REPO_BASE="/home/tom/sandbox/deegle_boot/pocketbeagle"
+
+export LNX_FW_PATH="${REPO_BASE}/ti-linux-firmware"
+export TFA_PATH="${REPO_BASE}/trusted-firmware-a"
+export OPTEE_PATH="${REPO_BASE}/optee_os"
+
+export UBOOT_CFG_CORTEXR="am62_pocketbeagle2_r5_defconfig"
+export UBOOT_CFG_CORTEXA="am62_pocketbeagle2_a53_defconfig"
+export TFA_BOARD="lite"
+
+# we dont use any extra TFA parameters
+unset TFA_EXTRA_ARGS
+
+export OPTEE_PLATFORM="k3-am62x"
+export OPTEE_EXTRA_ARGS="CFG_WITH_SOFTWARE_PRNG=y"
+
+```
+
+### Build ARM trusted firmware
+
+- `cd ./pocketbeagle/trusted-firmware-a/`
+- `source ../build_env`
+- `make -j16 CROSS_COMPILE=$CC64 ARCH=aarch64 PLAT=k3 SPD=opteed $TFA_EXTRA_ARGS TARGET_BOARD=$TFA_BOARD K3_USART=0x6 all`
+
+### Build OpTEE
+
+- `cd ./pocketbeagle/optee_os/`
+- `source ../build_env`
+- `source ../venv/bin/activate`
+- `pip install -r ../pyhton_tools.txt`
+- `make -j16 CROSS_COMPILE=$CC32 CROSS_COMPILE64=$CC64 CFG_ARM64_core=y $OPTEE_EXTRA_ARGS PLATFORM=$OPTEE_PLATFORM CFG_CONSOLE_UART=0x6 all`
+
+### Build U-Boot
+
+#### U-Boot for R5
+
+- `cd ./pocketbeagle/optee_os/`
+- `sudo apt install -y bc bison flex libgnutls28-dev libssl-dev swig uuid-dev yamllint`
+- `source ../build_env`
+- `source ../venv/bin/activate`
+- `make -j16 $UBOOT_CFG_CORTEXR`
+- `make -j16 CROSS_COMPILE=$CC32 BINMAN_INDIRS=$LNX_FW_PATH`
+
+#### U-Boot for A53
+
+- `cd ./pocketbeagle/optee_os/`
+- `sudo apt install -y bc bison flex libgnutls28-dev libssl-dev swig uuid-dev yamllint`
+- `source ../build_env`
+- `source ../venv/bin/activate`
+- `make -j16 $UBOOT_CFG_CORTEXA`
+- `make -j16 CROSS_COMPILE=$CC64 BINMAN_INDIRS=$LNX_FW_PATH BL31=$TFA_PATH/build/k3/$TFA_BOARD/release/bl31.bin TEE=$OPTEE_PATH/out/arm-plat-k3/core/tee-raw.bin`
+
+### Kernel
+
+- Change to Linux dir: `cd linux`
+- Enable the BeagleBone Black toolchain: `tc_pb2; tc_info`
+- Set kernel arch: `export ARCH="arm64"`
+- Check toolchain config: `tc_info`
+- Cleanup old buld artifacts: `make mrproper`
+- Select a BeagleBone Black compatible config: `make defconfig`
+- Tune the config: `make menuconfig`
+- Build the kernel (using 16 threads): `make -j16 Image dtbs modules`
+
+### Build and SD card image
+
+Partition SD card:
+
+- `sudo parted <device> mklabel msdos`
+- `sudo parted <device> mkpart primary fat32 1 129`
+- `sudo mkfs.fat <device>`
+- `sudo mount <device> /mnt`
+
+
+- `sudo cp sudo cp u-boot/tispl.bin /mnt/`
+- `sudo cp u-boot/u-boot.img /mnt/`
+- `sudo cp u-boot/tiboot3-am62x-hs-fs-evm.bin /mnt/tiboot.bin`
+- `sudo cp ../linux/arch/arm64/boot/dts/ti/k3-am62-pocketbeagle2.dtb /mnt/`
+- `sudo cp extlinux.conf /mnt/`
+
+The result should look like:
+
+```bash
+tom@frame:~/sandbox/deegle_boot/pocketbeagle$ ls -lah /mnt/
+insgesamt 2,1M
+drwxr-xr-x  2 root root  16K  1. Jan 1970  .
+drwxr-xr-x 19 root root 4,0K 14. Dez 12:20 ..
+-rwxr-xr-x  1 root root  199 15. Dez 15:00 extlinux.conf
+-rwxr-xr-x  1 root root  54K 15. Dez 15:00 k3-am62-pocketbeagle2.dtb
+-rwxr-xr-x  1 root root 256K 15. Dez 14:58 tiboot.bin
+-rwxr-xr-x  1 root root 908K 15. Dez 14:57 tispl.bin
+-rwxr-xr-x  1 root root 868K 15. Dez 14:58 u-boot.img
+```
+
+Remove the SD card: `sync; sudo umount /mnt`
+
+### Test the image
+
+TODO: How to get early serial logs?
+
+### Network boot
+
+TODO
+
+### Minimal root filesystem
+
+- Create folder: `mkdir -p /srv/nfs/pb2`
+- Copy libs and linker: `cp -R ~/x-tools/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/* /srv/nfs/pb2`
+
+#### Build busybox
+
+- `cd busybox`
+- `make mrproper`
+- Enable toolchain: `tc_pb2; tc_info`
+- `make defconfig`
+
+- If needed, fix menuconfig, see `https://unix.stackexchange.com/questions/790203/make-menuconfig-fails-while-working-on-busybox-only`.
+- If build issue: `make menuconfig` and disable tc network tool
+
+- `make -j16`
+- `sudo make install CONFIG_PREFIX=/srv/nfs/pb2/`
+
+
+#### Finalize root filesystem
+
+- Create missing folder: `mkdir -p /srv/nfs/pb2/{etc,etc/init.d,proc,sys,dev,tmp,root,var,lib,mnt,boot}`
+- Install kernel modules: `sudo make INSTALL_MOD_PATH=/srv/nfs/pb2/ modules_install`
+
+Then reboot the device. The serial output should look like:
+
+```bash
+```
+
+
