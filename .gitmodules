@@ -19,3 +19,6 @@
 [submodule "pocketbeagle/u-boot"]
 	path = pocketbeagle/u-boot
 	url = https://github.com/beagleboard/u-boot.git
+[submodule "busybox"]
+	path = busybox
+	url = https://git.busybox.net/busybox
